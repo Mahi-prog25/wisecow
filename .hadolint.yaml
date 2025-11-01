@@ -1,0 +1,2 @@
+ignored:
+  - DL3008   # We don't pin apt versions to keep security updates flowing
