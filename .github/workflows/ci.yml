@@ -12,8 +12,7 @@ permissions:
 env:
   APP_PORT: 4499
   TEST_PORT: 18080
-  # force lowercase to satisfy Docker/GHCR
-  IMAGE_NAME: ghcr.io/${{ toLower(github.repository_owner) }}/wisecow
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner | lower }}/wisecow
 
 jobs:
   build-test-and-push:
@@ -51,7 +50,6 @@ jobs:
         run: |
           set -euo pipefail
           cid=$(docker run -d -p ${TEST_PORT}:${APP_PORT} ${{ env.IMAGE_NAME }}:${{ github.sha }})
-          # wait a moment for the app to start
           for i in {1..20}; do
             if curl -fsS http://127.0.0.1:${TEST_PORT}/ >/dev/null; then
               echo "✅ Smoke test passed"
