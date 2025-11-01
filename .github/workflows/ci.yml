@@ -1,48 +1,86 @@
-name: CI Build & Publish (Wisecow)
+name: ci
 
 on:
   push:
-    branches: ["main"]
+    branches: [ main ]
   pull_request:
-    branches: ["main"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  APP_PORT: 4499
+  TEST_PORT: 18080
+  # force lowercase to satisfy Docker/GHCR
+  IMAGE_NAME: ghcr.io/${{ toLower(github.repository_owner) }}/wisecow
 
 jobs:
-  build:
+  build-test-and-push:
     runs-on: ubuntu-latest
-    env:
-      APP_PORT: 4499
 
     steps:
-      - name: Lowercase image owner
-        id: lowercase
-        run: echo "IMAGE_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
-
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Define image name
-        run: echo "IMAGE_NAME=ghcr.io/${IMAGE_OWNER}/wisecow" >> $GITHUB_ENV
-
-      - name: Show vars
-        run: |
-          echo "Using image: $IMAGE_NAME"
-          echo "Port: $APP_PORT"
-
-      - name: Lint Dockerfile
+      - name: Hadolint (allow warnings)
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
+          format: tty
           failure-threshold: warning
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Docker Buildx
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (no push on PR)
-        uses: docker/build-push-action@v4
+      - name: Build image (no push, load for tests)
+        uses: docker/build-push-action@v5
         with:
           context: .
-          push: false
-          tags: "${{ env.IMAGE_NAME }}:ci-${{ github.sha }}"
+          file: Dockerfile
+          load: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test container
+        run: |
+          set -euo pipefail
+          cid=$(docker run -d -p ${TEST_PORT}:${APP_PORT} ${{ env.IMAGE_NAME }}:${{ github.sha }})
+          # wait a moment for the app to start
+          for i in {1..20}; do
+            if curl -fsS http://127.0.0.1:${TEST_PORT}/ >/dev/null; then
+              echo "✅ Smoke test passed"
+              ok=1; break
+            fi
+            sleep 1
+          done
+          if [ "${ok:-0}" -ne 1 ]; then
+            echo "❌ Smoke test failed, container logs:" >&2
+            docker logs "$cid" || true
+            exit 1
+          fi
+          docker rm -f "$cid" >/dev/null 2>&1 || true
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR (latest + sha)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
