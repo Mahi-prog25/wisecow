@@ -4,9 +4,11 @@ on:
   push:
   pull_request:
 
+
 env:
   APP_PORT: 4499
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/wisecow
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner.toLowerCase() }}/wisecow
+
 
 jobs:
   build-test:
