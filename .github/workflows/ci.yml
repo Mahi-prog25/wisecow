@@ -12,7 +12,6 @@ permissions:
 env:
   APP_PORT: 4499
   TEST_PORT: 18080
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner | lower }}/wisecow
 
 jobs:
   build-test-and-push:
@@ -21,6 +20,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Compute lowercase owner and IMAGE_NAME safely
+      - name: Compute image name (lowercase owner)
+        id: img
+        shell: bash
+        run: |
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "OWNER_LC=$OWNER_LC" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=ghcr.io/${OWNER_LC}/wisecow" >> "$GITHUB_ENV"
+          echo "image_name=ghcr.io/${OWNER_LC}/wisecow" >> "$GITHUB_OUTPUT"
 
       - name: Hadolint (allow warnings)
         uses: hadolint/hadolint-action@v3.1.0
@@ -42,23 +51,23 @@ jobs:
           file: Dockerfile
           load: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ steps.img.outputs.image_name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke test container
+        shell: bash
         run: |
           set -euo pipefail
-          cid=$(docker run -d -p ${TEST_PORT}:${APP_PORT} ${{ env.IMAGE_NAME }}:${{ github.sha }})
-          for i in {1..20}; do
+          cid=$(docker run -d -p ${TEST_PORT}:${APP_PORT} ${{ steps.img.outputs.image_name }}:${{ github.sha }})
+          for i in {1..25}; do
             if curl -fsS http://127.0.0.1:${TEST_PORT}/ >/dev/null; then
-              echo "✅ Smoke test passed"
-              ok=1; break
+              echo "✅ Smoke test passed"; ok=1; break
             fi
             sleep 1
           done
-          if [ "${ok:-0}" -ne 1 ]; then
-            echo "❌ Smoke test failed, container logs:" >&2
+          if [[ "${ok:-0}" != "1" ]]; then
+            echo "❌ Smoke test failed. Logs:" >&2
             docker logs "$cid" || true
             exit 1
           fi
@@ -78,7 +87,7 @@ jobs:
           file: Dockerfile
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ steps.img.outputs.image_name }}:latest
+            ${{ steps.img.outputs.image_name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
