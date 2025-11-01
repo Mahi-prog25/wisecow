@@ -1,0 +1,129 @@
+name: CI / Docker → Test → GHCR
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKER_CONTEXT: .
+  DOCKERFILE: Dockerfile
+  APP_PORT: "4499"
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+jobs:
+  lint:
+    name: Lint (Dockerfile + Shell)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Hadolint (Dockerfile)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ env.DOCKERFILE }}
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Shellcheck (wisecow.sh)
+        run: shellcheck -S warning wisecow.sh
+
+  build_and_test:
+    name: Build & Smoke Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.DOCKER_CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          push: false
+          load: true
+          tags: test/wisecow:ci
+
+      - name: Run container
+        run: |
+          docker run -d --name wisecow_ci -p $APP_PORT:$APP_PORT test/wisecow:ci
+          echo "Container started; waiting for app…"
+          for i in {1..20}; do
+            if curl -fsS "http://127.0.0.1:${APP_PORT}/" >/dev/null; then
+              echo "App responded ✅"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "App did not respond in time ❌"
+          docker logs wisecow_ci || true
+          exit 1
+
+      - name: Show sample output
+        run: |
+          curl -s "http://127.0.0.1:${APP_PORT}/" | head -n 25
+
+      - name: Container logs (always print)
+        if: always()
+        run: docker logs wisecow_ci || true
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f wisecow_ci || true
+
+  push_to_ghcr:
+    name: Push to GHCR (main only)
+    runs-on: ubuntu-latest
+    needs: build_and_test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build & Push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.DOCKER_CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Summary
+        run: |
+          echo "Pushed image(s):"
+          echo "${{ steps.meta.outputs.tags }}"
